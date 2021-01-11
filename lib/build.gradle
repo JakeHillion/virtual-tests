@@ -9,11 +9,19 @@
 plugins {
     // Apply the java-library plugin for API and implementation separation.
     id 'java-library'
+    id 'com.diffplug.spotless' version '5.9.0'
+}
+
+spotless {
+    java {
+        googleJavaFormat()
+    }
 }
 
 repositories {
     // Use JCenter for resolving dependencies.
     jcenter()
+    maven { url 'https://jitpack.io' }
 }
 
 dependencies {
@@ -27,7 +35,7 @@ dependencies {
     api 'org.junit.jupiter:junit-jupiter-api:5.6.2'
 
     // This dependency is used internally, and not exposed to consumers on their own compile classpath.
-    implementation 'com.google.guava:guava:29.0-jre'
+    implementation 'com.github.JakeHillion:proxmox-java:8dacba2c5ab3ea8dc126c788ab014449d0febeb2'
 }
 
 tasks.named('test') {
