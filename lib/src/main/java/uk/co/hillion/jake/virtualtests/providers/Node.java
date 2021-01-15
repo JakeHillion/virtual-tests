@@ -18,9 +18,9 @@ public abstract class Node implements AutoCloseable {
 
   public abstract void stop() throws IOException;
 
-  public abstract SshReturn ssh(String command, long connectionTimeoutMillis) throws IOException;
+  public abstract SSHResult ssh(String command, long connectionTimeoutMillis) throws IOException;
 
-  public SshReturn ssh(String command) throws IOException {
+  public SSHResult ssh(String command) throws IOException {
     return ssh(command, 30000);
   }
 
@@ -28,12 +28,12 @@ public abstract class Node implements AutoCloseable {
     return template;
   }
 
-  public static class SshReturn {
+  public static class SSHResult {
     private final int returnCode;
     private final byte[] stdout;
     private final byte[] stderr;
 
-    protected SshReturn(int returnCode, byte[] stdout, byte[] stderr) {
+    protected SSHResult(int returnCode, byte[] stdout, byte[] stderr) {
       this.returnCode = returnCode;
       this.stdout = stdout;
       this.stderr = stderr;

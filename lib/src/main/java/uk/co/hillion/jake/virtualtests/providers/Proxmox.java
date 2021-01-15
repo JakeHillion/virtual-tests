@@ -337,7 +337,7 @@ public class Proxmox implements Provider {
     }
 
     @Override
-    public uk.co.hillion.jake.virtualtests.providers.Node.SshReturn ssh(String command, long connectionTimeoutMillis) throws IOException {
+    public SSHResult ssh(String command, long connectionTimeoutMillis) throws IOException {
       try {
         Session session = ssh.getSession("root", getManagementAddress().getHostAddress());
         session.setConfig("StrictHostKeyChecking", "no");
@@ -355,7 +355,7 @@ public class Proxmox implements Provider {
             c.setCommand(command);
 
             c.connect();
-            return new uk.co.hillion.jake.virtualtests.providers.Node.SshReturn(c.getExitStatus(), stdout.toByteArray(), stderr.toByteArray());
+            return new SSHResult(c.getExitStatus(), stdout.toByteArray(), stderr.toByteArray());
           }
         }
 
