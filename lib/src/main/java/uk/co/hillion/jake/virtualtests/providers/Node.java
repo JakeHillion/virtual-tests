@@ -3,7 +3,6 @@ package uk.co.hillion.jake.virtualtests.providers;
 import uk.co.hillion.jake.virtualtests.structure.Template;
 
 import java.io.IOException;
-import java.io.Reader;
 
 public abstract class Node implements AutoCloseable {
   private final Template template;
@@ -15,7 +14,15 @@ public abstract class Node implements AutoCloseable {
   @Override
   public abstract void close() throws IOException;
 
-  public abstract SshReturn ssh(String command) throws IOException;
+  public abstract void start() throws IOException;
+
+  public abstract void stop() throws IOException;
+
+  public abstract SshReturn ssh(String command, long connectionTimeoutMillis) throws IOException;
+
+  public SshReturn ssh(String command) throws IOException {
+    return ssh(command, 30000);
+  }
 
   public Template getTemplate() {
     return template;
@@ -23,10 +30,10 @@ public abstract class Node implements AutoCloseable {
 
   public static class SshReturn {
     private final int returnCode;
-    private final Reader stdout;
-    private final Reader stderr;
+    private final byte[] stdout;
+    private final byte[] stderr;
 
-    protected SshReturn(int returnCode, Reader stdout, Reader stderr) {
+    protected SshReturn(int returnCode, byte[] stdout, byte[] stderr) {
       this.returnCode = returnCode;
       this.stdout = stdout;
       this.stderr = stderr;
@@ -36,11 +43,11 @@ public abstract class Node implements AutoCloseable {
       return returnCode;
     }
 
-    public Reader getStdout() {
+    public byte[] getStdout() {
       return stdout;
     }
 
-    public Reader getStderr() {
+    public byte[] getStderr() {
       return stderr;
     }
   }

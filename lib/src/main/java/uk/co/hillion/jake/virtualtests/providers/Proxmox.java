@@ -1,26 +1,25 @@
 package uk.co.hillion.jake.virtualtests.providers;
 
 import com.google.common.net.InetAddresses;
-import uk.co.hillion.jake.proxmox.ProxmoxAPI;
-import uk.co.hillion.jake.proxmox.Qemu;
-import uk.co.hillion.jake.proxmox.QemuConfig;
-import uk.co.hillion.jake.proxmox.Task;
+import com.jcraft.jsch.*;
+import uk.co.hillion.jake.proxmox.*;
 import uk.co.hillion.jake.virtualtests.structure.Blueprint;
 import uk.co.hillion.jake.virtualtests.structure.BridgeRequest;
 import uk.co.hillion.jake.virtualtests.structure.Distribution;
 import uk.co.hillion.jake.virtualtests.structure.Template;
 
-import java.io.IOException;
+import java.io.*;
 import java.math.BigInteger;
 import java.net.Inet4Address;
-import java.net.Inet6Address;
 import java.net.InetAddress;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.function.Function;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
-import java.util.stream.Stream;
 
 public class Proxmox implements Provider {
   private final long RefreshInterval = 1000L;
@@ -28,6 +27,9 @@ public class Proxmox implements Provider {
   private final ProxmoxAuth auth;
   private final ProxmoxConfig config;
   private final ProxmoxAPI api;
+
+  private final String publicKey;
+  private final JSch ssh;
 
   public Proxmox(ProxmoxAuth auth, ProxmoxConfig config) {
     this(auth, config, true);
@@ -38,6 +40,20 @@ public class Proxmox implements Provider {
     this.config = config;
 
     api = new ProxmoxAPI(auth.host, auth.user, auth.tokenName, auth.token, verifySsl);
+    ssh = new JSch();
+
+    try {
+      KeyPair keypair = KeyPair.genKeyPair(ssh, KeyPair.RSA, 2048);
+      publicKey = Base64.getEncoder().encodeToString(keypair.getPublicKeyBlob());
+
+      ByteArrayOutputStream privateKeyStream = new ByteArrayOutputStream();
+      keypair.writePrivateKey(privateKeyStream);
+
+      ssh.addIdentity(
+          "generated", privateKeyStream.toByteArray(), keypair.getPublicKeyBlob(), null);
+    } catch (JSchException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   @Override
@@ -99,6 +115,7 @@ public class Proxmox implements Provider {
       }
     }
 
+    executor.shutdown();
     return env;
   }
 
@@ -134,32 +151,25 @@ public class Proxmox implements Provider {
 
     awaitTask(cloneJob);
 
+    String sshKeys = URLEncoder.encode("ssh-rsa " + publicKey, StandardCharsets.US_ASCII).replace("+", "%20");
+
     QemuConfig.SyncUpdate newConfig =
         new QemuConfig.SyncUpdate()
             .setSockets(1)
             .setCores(template.getCoreCount())
             .setMemory(template.getMemoryMb())
-            .setCiuser("virtualtests")
+            .setCiuser("root")
             .setNet(new HashMap<>())
-            .setIpconfig(new HashMap<>());
+            .setIpconfig(new HashMap<>())
+            .setSshkeys(sshKeys);
 
     // Set up first interface as management (immutable)
     if (template.getInterfaces() > 0) {
       newConfig.net.put(0, String.format("model=virtio,bridge=%s", config.managementBridge));
 
-      BigInteger addedAddress =
-          InetAddresses.toBigInteger(config.initialManagementIp)
-              .add(BigInteger.valueOf(newId - config.initialVmId));
-
-      if (config.initialManagementIp instanceof Inet4Address) {
-        Inet4Address managementIp = InetAddresses.fromIPv4BigInteger(addedAddress);
-        newConfig.ipconfig.put(
-            0, String.format("ip=%s/%d", managementIp.getHostAddress(), config.managementNetmask));
-      } else {
-        Inet6Address managementIp = InetAddresses.fromIPv6BigInteger(addedAddress);
-        newConfig.ipconfig.put(
-            0, String.format("ip=%s/%d", managementIp.getHostAddress(), config.managementNetmask));
-      }
+      InetAddress managementAddress = getManagementAddress(newId);
+      newConfig.ipconfig.put(
+              0, String.format("ip=%s/%d", managementAddress.getHostAddress(), config.managementNetmask));
     }
 
     // Set up second interface as Internet (mutable)
@@ -178,6 +188,18 @@ public class Proxmox implements Provider {
 
     api.node(auth.node).qemu(newId).config().put(newConfig);
     return new Machine(template, newId);
+  }
+
+  private InetAddress getManagementAddress(int vmId) {
+    BigInteger addedAddress =
+            InetAddresses.toBigInteger(config.initialManagementIp)
+                    .add(BigInteger.valueOf(vmId - config.initialVmId));
+
+    if (config.initialManagementIp instanceof Inet4Address) {
+      return InetAddresses.fromIPv4BigInteger(addedAddress);
+    } else {
+      return InetAddresses.fromIPv6BigInteger(addedAddress);
+    }
   }
 
   private int findVmId() throws IOException {
@@ -294,12 +316,56 @@ public class Proxmox implements Provider {
 
     @Override
     public void close() throws IOException {
+      QemuStatus status = api.node(auth.node).qemu(id).status().get();
+      if (status.getStatus() == QemuStatus.Status.RUNNING) {
+        String stopJob = api.node(auth.node).qemu(id).status().stop(new QemuStatus.Stop());
+        awaitTask(stopJob);
+      }
       api.node(auth.node).qemu(id).delete();
     }
 
     @Override
-    public SshReturn ssh(String command) throws IOException {
-      return new SshReturn(0, null, null);
+    public void start() throws IOException {
+      String startJob = api.node(auth.node).qemu(id).status().start(new QemuStatus.Start());
+      awaitTask(startJob);
+    }
+
+    @Override
+    public void stop() throws IOException {
+      String stopJob = api.node(auth.node).qemu(id).status().shutdown(new QemuStatus.Shutdown());
+      awaitTask(stopJob);
+    }
+
+    @Override
+    public uk.co.hillion.jake.virtualtests.providers.Node.SshReturn ssh(String command, long connectionTimeoutMillis) throws IOException {
+      try {
+        Session session = ssh.getSession("root", getManagementAddress().getHostAddress());
+        session.setConfig("StrictHostKeyChecking", "no");
+
+        try (SshUtils.ManagedSession s = SshUtils.getManagedSession(session, connectionTimeoutMillis)) {
+          try (SshUtils.ManagedChannel<ChannelExec> mc = s.getChannelExec()) {
+            ChannelExec c = mc.getChannel();
+
+            ByteArrayOutputStream stdout = new ByteArrayOutputStream();
+            ByteArrayOutputStream stderr = new ByteArrayOutputStream();
+
+            c.setOutputStream(stdout);
+            c.setErrStream(stderr);
+
+            c.setCommand(command);
+
+            c.connect();
+            return new uk.co.hillion.jake.virtualtests.providers.Node.SshReturn(c.getExitStatus(), stdout.toByteArray(), stderr.toByteArray());
+          }
+        }
+
+      } catch (JSchException e) {
+        throw new IOException(e);
+      }
+    }
+
+    private InetAddress getManagementAddress() {
+      return Proxmox.this.getManagementAddress(id);
     }
   }
 

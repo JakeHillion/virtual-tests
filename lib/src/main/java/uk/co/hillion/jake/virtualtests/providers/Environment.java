@@ -3,6 +3,8 @@ package uk.co.hillion.jake.virtualtests.providers;
 import java.io.IOException;
 import java.util.List;
 
+import uk.co.hillion.jake.virtualtests.providers.Node;
+
 public class Environment implements AutoCloseable {
   private final List<Node> nodes;
   private final List<Bridge> bridges;
