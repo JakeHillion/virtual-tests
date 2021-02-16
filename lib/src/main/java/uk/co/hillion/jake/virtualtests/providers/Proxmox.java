@@ -1,20 +1,36 @@
 package uk.co.hillion.jake.virtualtests.providers;
 
 import com.google.common.net.InetAddresses;
-import com.jcraft.jsch.*;
-import uk.co.hillion.jake.proxmox.*;
+import com.jcraft.jsch.ChannelExec;
+import com.jcraft.jsch.JSch;
+import com.jcraft.jsch.JSchException;
+import com.jcraft.jsch.KeyPair;
+import com.jcraft.jsch.Session;
+import uk.co.hillion.jake.proxmox.ProxmoxAPI;
+import uk.co.hillion.jake.proxmox.Qemu;
+import uk.co.hillion.jake.proxmox.QemuConfig;
+import uk.co.hillion.jake.proxmox.QemuStatus;
+import uk.co.hillion.jake.proxmox.Task;
 import uk.co.hillion.jake.virtualtests.structure.Blueprint;
 import uk.co.hillion.jake.virtualtests.structure.BridgeRequest;
 import uk.co.hillion.jake.virtualtests.structure.Distribution;
 import uk.co.hillion.jake.virtualtests.structure.Template;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -151,7 +167,8 @@ public class Proxmox implements Provider {
 
     awaitTask(cloneJob);
 
-    String sshKeys = URLEncoder.encode("ssh-rsa " + publicKey, StandardCharsets.US_ASCII).replace("+", "%20");
+    String sshKeys =
+        URLEncoder.encode("ssh-rsa " + publicKey, StandardCharsets.US_ASCII).replace("+", "%20");
 
     QemuConfig.SyncUpdate newConfig =
         new QemuConfig.SyncUpdate()
@@ -169,7 +186,8 @@ public class Proxmox implements Provider {
 
       InetAddress managementAddress = getManagementAddress(newId);
       newConfig.ipconfig.put(
-              0, String.format("ip=%s/%d", managementAddress.getHostAddress(), config.managementNetmask));
+          0,
+          String.format("ip=%s/%d", managementAddress.getHostAddress(), config.managementNetmask));
     }
 
     // Set up second interface as Internet (mutable)
@@ -179,6 +197,8 @@ public class Proxmox implements Provider {
       } else {
         newConfig.net.put(1, "model=virtio");
       }
+
+      newConfig.ipconfig.put(1, "ip=dhcp");
     }
 
     // Leave future interfaces empty for manual setup
@@ -192,8 +212,8 @@ public class Proxmox implements Provider {
 
   private InetAddress getManagementAddress(int vmId) {
     BigInteger addedAddress =
-            InetAddresses.toBigInteger(config.initialManagementIp)
-                    .add(BigInteger.valueOf(vmId - config.initialVmId));
+        InetAddresses.toBigInteger(config.initialManagementIp)
+            .add(BigInteger.valueOf(vmId - config.initialVmId));
 
     if (config.initialManagementIp instanceof Inet4Address) {
       return InetAddresses.fromIPv4BigInteger(addedAddress);
@@ -321,7 +341,8 @@ public class Proxmox implements Provider {
         String stopJob = api.node(auth.node).qemu(id).status().stop(new QemuStatus.Stop());
         awaitTask(stopJob);
       }
-      api.node(auth.node).qemu(id).delete();
+      String deleteJob = api.node(auth.node).qemu(id).delete();
+      awaitTask(deleteJob);
     }
 
     @Override
@@ -342,7 +363,8 @@ public class Proxmox implements Provider {
         Session session = ssh.getSession("root", getManagementAddress().getHostAddress());
         session.setConfig("StrictHostKeyChecking", "no");
 
-        try (SshUtils.ManagedSession s = SshUtils.getManagedSession(session, connectionTimeoutMillis)) {
+        try (SshUtils.ManagedSession s =
+            SshUtils.getManagedSession(session, connectionTimeoutMillis)) {
           try (SshUtils.ManagedChannel<ChannelExec> mc = s.getChannelExec()) {
             ChannelExec c = mc.getChannel();
 
@@ -355,6 +377,15 @@ public class Proxmox implements Provider {
             c.setCommand(command);
 
             c.connect();
+
+            while (c.isConnected()) {
+              try {
+                Thread.sleep(100);
+              } catch (InterruptedException e) {
+                throw new IOException(e);
+              }
+            }
+
             return new SSHResult(c.getExitStatus(), stdout.toByteArray(), stderr.toByteArray());
           }
         }

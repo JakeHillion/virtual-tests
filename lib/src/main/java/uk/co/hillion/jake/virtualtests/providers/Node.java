@@ -24,6 +24,18 @@ public abstract class Node implements AutoCloseable {
     return ssh(command, 30000);
   }
 
+  public SSHResult mustSsh(String command) throws IOException {
+    return mustSsh(command, 30000);
+  }
+
+  public SSHResult mustSsh(String command, long connectionTimeoutMillis) throws IOException {
+    SSHResult result = ssh(command, connectionTimeoutMillis);
+    if (result.getReturnCode() != 0) {
+      throw new SSHException(result);
+    }
+    return result;
+  }
+
   public Template getTemplate() {
     return template;
   }
@@ -49,6 +61,19 @@ public abstract class Node implements AutoCloseable {
 
     public byte[] getStderr() {
       return stderr;
+    }
+  }
+
+  public static class SSHException extends IOException {
+    private final SSHResult result;
+
+    private SSHException(SSHResult result) {
+      super();
+      this.result = result;
+    }
+
+    public SSHResult getResult() {
+      return result;
     }
   }
 }
