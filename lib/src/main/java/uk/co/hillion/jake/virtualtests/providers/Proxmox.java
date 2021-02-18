@@ -6,6 +6,7 @@ import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.KeyPair;
 import com.jcraft.jsch.Session;
+import uk.co.hillion.jake.proxmox.Network;
 import uk.co.hillion.jake.proxmox.ProxmoxAPI;
 import uk.co.hillion.jake.proxmox.Qemu;
 import uk.co.hillion.jake.proxmox.QemuConfig;
@@ -26,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
@@ -88,8 +90,21 @@ public class Proxmox implements Provider {
     for (Template t : blueprint.getNodes()) {
       machines.add(buildMachine(t));
     }
+    machines = Collections.unmodifiableList(machines);
 
-    Environment env = new Environment(machines, null);
+    List<Bridge> bridges = new ArrayList<>(blueprint.getBridges().size());
+    for (BridgeRequest request : blueprint.getBridges()) {
+      bridges.add(buildBridge(request));
+    }
+    bridges = Collections.unmodifiableList(bridges);
+
+    if (bridges.size() > 0) {
+      // If bridges created,
+      String task = api.node(auth.node).networks().put();
+      awaitTask(task);
+    }
+
+    Environment env = new Environment(machines, bridges);
 
     // Setup environment according to blueprint
     List<Map.Entry<Node, Template.SetupStage>> stages =
@@ -149,9 +164,8 @@ public class Proxmox implements Provider {
     }
   }
 
-  private void checkBridgeRequest(BridgeRequest bridgeRequest) throws ImpossibleBlueprintException {
-    throw new ImpossibleBlueprintException(this, "Proxmox cannot build bridges (not implemented)");
-  }
+  private void checkBridgeRequest(BridgeRequest bridgeRequest)
+      throws ImpossibleBlueprintException {}
 
   private Machine buildMachine(Template template) throws IOException {
     Integer toClone = config.templateMap.get(template.dist);
@@ -232,6 +246,37 @@ public class Proxmox implements Provider {
             .collect(Collectors.toSet());
 
     for (int newId = initialId; true; newId++) {
+      if (!occupied.contains(newId)) {
+        return newId;
+      }
+    }
+  }
+
+  private LinuxBridge buildBridge(BridgeRequest request) throws IOException {
+    String newName = "vmbr" + findBridgeId();
+
+    api.node(auth.node)
+            .networks()
+            .post(
+                    new Network.Create()
+                            .setIface(newName)
+                            .setAutostart(true)
+                            .setType(Network.Create.Type.BRIDGE)
+                            .setComments("Created by VirtualTests"));
+
+    return new LinuxBridge(newName);
+  }
+
+  private int findBridgeId() throws IOException {
+    Set<Integer> occupied =
+            Arrays.stream(api.node(auth.node).networks().get())
+                    .map(Network::getIface)
+                    .filter(x -> x.startsWith("vmbr"))
+                    .map(x -> x.substring(4))
+                    .map(Integer::parseInt)
+                    .collect(Collectors.toSet());
+
+    for (int newId = 0; true; newId++) {
       if (!occupied.contains(newId)) {
         return newId;
       }
@@ -409,7 +454,12 @@ public class Proxmox implements Provider {
 
     @Override
     public void close() throws IOException {
-      throw new RuntimeException("not implemented");
+      api.node(auth.node).network(bridge).delete();
+    }
+
+    @Override
+    public void closeAll() throws IOException {
+      api.node(auth.node).networks().put();
     }
   }
 }
