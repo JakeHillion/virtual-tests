@@ -98,12 +98,6 @@ public class Proxmox implements Provider {
     }
     bridges = Collections.unmodifiableList(bridges);
 
-    if (bridges.size() > 0) {
-      // If bridges created,
-      String task = api.node(auth.node).networks().put();
-      awaitTask(task);
-    }
-
     Environment env = new Environment(machines, bridges);
 
     // Setup environment according to blueprint
@@ -263,6 +257,11 @@ public class Proxmox implements Provider {
                             .setAutostart(true)
                             .setType(Network.Create.Type.BRIDGE)
                             .setComments("Created by VirtualTests"));
+
+    // Doing this every time is quite inefficient, but it avoids the networks.get
+    // call having to deal with some really weird data next time.
+    String task = api.node(auth.node).networks().put();
+    awaitTask(task);
 
     return new LinuxBridge(newName);
   }
