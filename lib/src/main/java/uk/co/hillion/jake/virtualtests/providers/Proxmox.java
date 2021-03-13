@@ -109,39 +109,44 @@ public class Proxmox implements Provider {
               .sorted(Map.Entry.comparingByValue())
               .collect(Collectors.toList());
 
-      ExecutorService executor = Executors.newSingleThreadExecutor();
-      while (!stages.isEmpty()) {
-        int currentOrder = stages.get(0).getValue().getOrder();
+      ExecutorService executor = null;
+      try {
+        executor = Executors.newSingleThreadExecutor();
+        while (!stages.isEmpty()) {
+          int currentOrder = stages.get(0).getValue().getOrder();
 
-        List<Future<Void>> currentStages = new ArrayList<>();
-        while (!stages.isEmpty() && stages.get(0).getValue().getOrder() == currentOrder) {
-          Map.Entry<Node, Template.SetupStage> stage = stages.remove(0);
+          List<Future<Void>> currentStages = new ArrayList<>();
+          while (!stages.isEmpty() && stages.get(0).getValue().getOrder() == currentOrder) {
+            Map.Entry<Node, Template.SetupStage> stage = stages.remove(0);
 
-          Future<Void> future =
-              executor.submit(
-                  () -> {
-                    stage.getValue().getFoo().setup(env, stage.getKey());
-                    return null;
-                  });
+            Future<Void> future =
+                executor.submit(
+                    () -> {
+                      stage.getValue().getFoo().setup(env, stage.getKey());
+                      return null;
+                    });
 
-          currentStages.add(future);
-        }
+            currentStages.add(future);
+          }
 
-        for (Future<Void> f : currentStages) {
-          try {
-            f.get();
-          } catch (InterruptedException e) {
-            throw new IOException(e);
-          } catch (ExecutionException e) {
-            if (e.getCause() instanceof IOException) {
-              throw (IOException) e.getCause();
+          for (Future<Void> f : currentStages) {
+            try {
+              f.get();
+            } catch (InterruptedException e) {
+              throw new IOException(e);
+            } catch (ExecutionException e) {
+              if (e.getCause() instanceof IOException) {
+                throw (IOException) e.getCause();
+              }
+              throw new IOException(e);
             }
-            throw new IOException(e);
           }
         }
+      } finally {
+        if (executor != null) {
+          executor.shutdown();
+        }
       }
-
-      executor.shutdown();
     } catch (Exception e) {
       env.close();
       throw e;
@@ -254,13 +259,13 @@ public class Proxmox implements Provider {
     String newName = "vmbr" + findBridgeId();
 
     api.node(auth.node)
-            .networks()
-            .post(
-                    new Network.Create()
-                            .setIface(newName)
-                            .setAutostart(true)
-                            .setType(Network.Create.Type.BRIDGE)
-                            .setComments("Created by VirtualTests"));
+        .networks()
+        .post(
+            new Network.Create()
+                .setIface(newName)
+                .setAutostart(true)
+                .setType(Network.Create.Type.BRIDGE)
+                .setComments("Created by VirtualTests"));
 
     // Doing this every time is quite inefficient, but it avoids the networks.get
     // call having to deal with some really weird data next time.
@@ -272,12 +277,12 @@ public class Proxmox implements Provider {
 
   private int findBridgeId() throws IOException {
     Set<Integer> occupied =
-            Arrays.stream(api.node(auth.node).networks().get())
-                    .map(Network::getIface)
-                    .filter(x -> x.startsWith("vmbr"))
-                    .map(x -> x.substring(4))
-                    .map(Integer::parseInt)
-                    .collect(Collectors.toSet());
+        Arrays.stream(api.node(auth.node).networks().get())
+            .map(Network::getIface)
+            .filter(x -> x.startsWith("vmbr"))
+            .map(x -> x.substring(4))
+            .map(Integer::parseInt)
+            .collect(Collectors.toSet());
 
     for (int newId = 0; true; newId++) {
       if (!occupied.contains(newId)) {
