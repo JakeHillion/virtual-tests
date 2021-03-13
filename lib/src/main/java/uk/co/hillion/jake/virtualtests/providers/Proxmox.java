@@ -101,46 +101,52 @@ public class Proxmox implements Provider {
     Environment env = new Environment(machines, bridges);
 
     // Setup environment according to blueprint
-    List<Map.Entry<Node, Template.SetupStage>> stages =
-        machines.stream()
-            .map(n -> Map.entry(n, n.getTemplate().getSetup()))
-            .flatMap(e -> e.getValue().stream().map(f -> Map.entry(e.getKey(), f)))
-            .sorted(Map.Entry.comparingByValue())
-            .collect(Collectors.toList());
+    try {
+      List<Map.Entry<Node, Template.SetupStage>> stages =
+          machines.stream()
+              .map(n -> Map.entry(n, n.getTemplate().getSetup()))
+              .flatMap(e -> e.getValue().stream().map(f -> Map.entry(e.getKey(), f)))
+              .sorted(Map.Entry.comparingByValue())
+              .collect(Collectors.toList());
 
-    ExecutorService executor = Executors.newSingleThreadExecutor();
-    while (!stages.isEmpty()) {
-      int currentOrder = stages.get(0).getValue().getOrder();
+      ExecutorService executor = Executors.newSingleThreadExecutor();
+      while (!stages.isEmpty()) {
+        int currentOrder = stages.get(0).getValue().getOrder();
 
-      List<Future<Void>> currentStages = new ArrayList<>();
-      while (!stages.isEmpty() && stages.get(0).getValue().getOrder() == currentOrder) {
-        Map.Entry<Node, Template.SetupStage> stage = stages.remove(0);
+        List<Future<Void>> currentStages = new ArrayList<>();
+        while (!stages.isEmpty() && stages.get(0).getValue().getOrder() == currentOrder) {
+          Map.Entry<Node, Template.SetupStage> stage = stages.remove(0);
 
-        Future<Void> future =
-            executor.submit(
-                () -> {
-                  stage.getValue().getFoo().setup(env, stage.getKey());
-                  return null;
-                });
+          Future<Void> future =
+              executor.submit(
+                  () -> {
+                    stage.getValue().getFoo().setup(env, stage.getKey());
+                    return null;
+                  });
 
-        currentStages.add(future);
-      }
+          currentStages.add(future);
+        }
 
-      for (Future<Void> f : currentStages) {
-        try {
-          f.get();
-        } catch (InterruptedException e) {
-          throw new IOException(e);
-        } catch (ExecutionException e) {
-          if (e.getCause() instanceof IOException) {
-            throw (IOException) e.getCause();
+        for (Future<Void> f : currentStages) {
+          try {
+            f.get();
+          } catch (InterruptedException e) {
+            throw new IOException(e);
+          } catch (ExecutionException e) {
+            if (e.getCause() instanceof IOException) {
+              throw (IOException) e.getCause();
+            }
+            throw new IOException(e);
           }
-          throw new IOException(e);
         }
       }
+
+      executor.shutdown();
+    } catch (Exception e) {
+      env.close();
+      throw e;
     }
 
-    executor.shutdown();
     return env;
   }
 
@@ -152,9 +158,7 @@ public class Proxmox implements Provider {
 
     if (template.getInterfaces() == 0) {
       throw new ImpossibleBlueprintException(
-          this,
-          String.format(
-              "Proxmox requires at least one interface for management (kvm not implemented)"));
+          this, "Proxmox requires at least one interface for management (kvm not implemented)");
     }
   }
 
