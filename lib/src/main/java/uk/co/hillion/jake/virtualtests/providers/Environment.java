@@ -25,9 +25,15 @@ public class Environment implements AutoCloseable {
     for (Node n : getNodes()) {
       n.close();
     }
+    if (getNodes().size() > 0) {
+      getNodes().get(0).closeAll();
+    }
 
     for (Bridge b : getBridges()) {
       b.close();
+    }
+    if (getBridges().size() > 0) {
+      getBridges().get(0).closeAll();
     }
   }
 }

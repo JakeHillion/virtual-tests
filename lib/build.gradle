@@ -37,7 +37,7 @@ dependencies {
     implementation("com.google.guava:guava:30.1-jre")
 
     implementation 'com.jcraft:jsch:0.1.55'
-    implementation 'com.github.JakeHillion:proxmox-java:aa4d63733ef3bfebbb0fe846f13dd22c30606bf8'
+    implementation 'com.github.JakeHillion:proxmox-java:98352d7a4ca2531e384337913b52802b9a24914a'
 }
 
 tasks.named('test') {

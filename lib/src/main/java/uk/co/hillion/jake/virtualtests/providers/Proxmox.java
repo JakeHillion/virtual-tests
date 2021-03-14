@@ -6,6 +6,7 @@ import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.JSchException;
 import com.jcraft.jsch.KeyPair;
 import com.jcraft.jsch.Session;
+import uk.co.hillion.jake.proxmox.Network;
 import uk.co.hillion.jake.proxmox.ProxmoxAPI;
 import uk.co.hillion.jake.proxmox.Qemu;
 import uk.co.hillion.jake.proxmox.QemuConfig;
@@ -26,6 +27,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.List;
@@ -35,6 +37,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class Proxmox implements Provider {
@@ -88,50 +91,65 @@ public class Proxmox implements Provider {
     for (Template t : blueprint.getNodes()) {
       machines.add(buildMachine(t));
     }
+    machines = Collections.unmodifiableList(machines);
 
-    Environment env = new Environment(machines, null);
+    List<Bridge> bridges = new ArrayList<>(blueprint.getBridges().size());
+    for (BridgeRequest request : blueprint.getBridges()) {
+      bridges.add(buildBridge(request));
+    }
+    bridges = Collections.unmodifiableList(bridges);
+
+    Environment env = new Environment(machines, bridges);
 
     // Setup environment according to blueprint
-    List<Map.Entry<Node, Template.SetupStage>> stages =
-        machines.stream()
-            .map(n -> Map.entry(n, n.getTemplate().getSetup()))
-            .flatMap(e -> e.getValue().stream().map(f -> Map.entry(e.getKey(), f)))
-            .sorted(Map.Entry.comparingByValue())
-            .collect(Collectors.toList());
+    try {
+      List<Map.Entry<Node, Template.SetupStage>> stages =
+          machines.stream()
+              .map(n -> Map.entry(n, n.getTemplate().getSetup()))
+              .flatMap(e -> e.getValue().stream().map(f -> Map.entry(e.getKey(), f)))
+              .sorted(Map.Entry.comparingByValue())
+              .collect(Collectors.toList());
 
-    ExecutorService executor = Executors.newSingleThreadExecutor();
-    while (!stages.isEmpty()) {
-      int currentOrder = stages.get(0).getValue().getOrder();
+      ExecutorService executor = Executors.newSingleThreadExecutor();
+      try {
+        while (!stages.isEmpty()) {
+          int currentOrder = stages.get(0).getValue().getOrder();
 
-      List<Future<Void>> currentStages = new ArrayList<>();
-      while (!stages.isEmpty() && stages.get(0).getValue().getOrder() == currentOrder) {
-        Map.Entry<Node, Template.SetupStage> stage = stages.remove(0);
+          List<Future<Void>> currentStages = new ArrayList<>();
+          while (!stages.isEmpty() && stages.get(0).getValue().getOrder() == currentOrder) {
+            Map.Entry<Node, Template.SetupStage> stage = stages.remove(0);
 
-        Future<Void> future =
-            executor.submit(
-                () -> {
-                  stage.getValue().getFoo().setup(env, stage.getKey());
-                  return null;
-                });
+            Future<Void> future =
+                executor.submit(
+                    () -> {
+                      stage.getValue().getFoo().setup(env, stage.getKey());
+                      return null;
+                    });
 
-        currentStages.add(future);
-      }
-
-      for (Future<Void> f : currentStages) {
-        try {
-          f.get();
-        } catch (InterruptedException e) {
-          throw new IOException(e);
-        } catch (ExecutionException e) {
-          if (e.getCause() instanceof IOException) {
-            throw (IOException) e.getCause();
+            currentStages.add(future);
           }
-          throw new IOException(e);
+
+          for (Future<Void> f : currentStages) {
+            try {
+              f.get();
+            } catch (InterruptedException e) {
+              throw new IOException(e);
+            } catch (ExecutionException e) {
+              if (e.getCause() instanceof IOException) {
+                throw (IOException) e.getCause();
+              }
+              throw new IOException(e);
+            }
+          }
         }
+      } finally {
+        executor.shutdownNow();
       }
+    } catch (Exception e) {
+      env.close();
+      throw e;
     }
 
-    executor.shutdown();
     return env;
   }
 
@@ -143,15 +161,12 @@ public class Proxmox implements Provider {
 
     if (template.getInterfaces() == 0) {
       throw new ImpossibleBlueprintException(
-          this,
-          String.format(
-              "Proxmox requires at least one interface for management (kvm not implemented)"));
+          this, "Proxmox requires at least one interface for management (kvm not implemented)");
     }
   }
 
-  private void checkBridgeRequest(BridgeRequest bridgeRequest) throws ImpossibleBlueprintException {
-    throw new ImpossibleBlueprintException(this, "Proxmox cannot build bridges (not implemented)");
-  }
+  private void checkBridgeRequest(BridgeRequest bridgeRequest)
+      throws ImpossibleBlueprintException {}
 
   private Machine buildMachine(Template template) throws IOException {
     Integer toClone = config.templateMap.get(template.dist);
@@ -232,6 +247,42 @@ public class Proxmox implements Provider {
             .collect(Collectors.toSet());
 
     for (int newId = initialId; true; newId++) {
+      if (!occupied.contains(newId)) {
+        return newId;
+      }
+    }
+  }
+
+  private LinuxBridge buildBridge(BridgeRequest request) throws IOException {
+    String newName = "vmbr" + findBridgeId();
+
+    api.node(auth.node)
+        .networks()
+        .post(
+            new Network.Create()
+                .setIface(newName)
+                .setAutostart(true)
+                .setType(Network.Create.Type.BRIDGE)
+                .setComments("Created by VirtualTests"));
+
+    // Doing this every time is quite inefficient, but it avoids the networks.get
+    // call having to deal with some really weird data next time.
+    String task = api.node(auth.node).networks().put();
+    awaitTask(task);
+
+    return new LinuxBridge(newName);
+  }
+
+  private int findBridgeId() throws IOException {
+    Set<Integer> occupied =
+        Arrays.stream(api.node(auth.node).networks().get())
+            .map(Network::getIface)
+            .filter(x -> x.startsWith("vmbr"))
+            .map(x -> x.substring(4))
+            .map(Integer::parseInt)
+            .collect(Collectors.toSet());
+
+    for (int newId = 0; true; newId++) {
       if (!occupied.contains(newId)) {
         return newId;
       }
@@ -409,7 +460,12 @@ public class Proxmox implements Provider {
 
     @Override
     public void close() throws IOException {
-      throw new RuntimeException("not implemented");
+      api.node(auth.node).network(bridge).delete();
+    }
+
+    @Override
+    public void closeAll() throws IOException {
+      api.node(auth.node).networks().put();
     }
   }
 }

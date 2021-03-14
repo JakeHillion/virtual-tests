@@ -14,6 +14,8 @@ public abstract class Node implements AutoCloseable {
   @Override
   public abstract void close() throws IOException;
 
+  public void closeAll() throws IOException {}
+
   public abstract void start() throws IOException;
 
   public abstract void stop() throws IOException;
