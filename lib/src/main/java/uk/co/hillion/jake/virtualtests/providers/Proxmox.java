@@ -37,6 +37,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class Proxmox implements Provider {
@@ -109,9 +110,8 @@ public class Proxmox implements Provider {
               .sorted(Map.Entry.comparingByValue())
               .collect(Collectors.toList());
 
-      ExecutorService executor = null;
+      ExecutorService executor = Executors.newSingleThreadExecutor();
       try {
-        executor = Executors.newSingleThreadExecutor();
         while (!stages.isEmpty()) {
           int currentOrder = stages.get(0).getValue().getOrder();
 
@@ -143,9 +143,7 @@ public class Proxmox implements Provider {
           }
         }
       } finally {
-        if (executor != null) {
-          executor.shutdown();
-        }
+        executor.shutdownNow();
       }
     } catch (Exception e) {
       env.close();
