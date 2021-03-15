@@ -3,6 +3,7 @@ package uk.co.hillion.jake.virtualtests.providers;
 import uk.co.hillion.jake.virtualtests.structure.Template;
 
 import java.io.IOException;
+import java.util.List;
 
 public abstract class Node implements AutoCloseable {
   private final Template template;
@@ -10,6 +11,8 @@ public abstract class Node implements AutoCloseable {
   protected Node(Template template) {
     this.template = template;
   }
+
+  public abstract List<Interface> getInterfaces();
 
   @Override
   public abstract void close() throws IOException;

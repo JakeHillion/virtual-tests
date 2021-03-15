@@ -21,6 +21,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -37,7 +38,6 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 public class Proxmox implements Provider {
@@ -380,9 +380,26 @@ public class Proxmox implements Provider {
   public class Machine extends Node {
     private final int id;
 
+    private final List<Interface> interfaces = new ArrayList<>();
+
     private Machine(Template template, int id) {
       super(template);
       this.id = id;
+
+      interfaces.add(
+          new Interface.ImmutableInterface(getManagementAddress(), config.managementNetmask));
+      if (template.getInterfaces() > 1) {
+        interfaces.add(new MutableInterface(1, new LinuxBridge(config.internetBridge), null, null));
+      }
+
+      for (int i = 2; i < template.getInterfaces(); i++) {
+        interfaces.add(new MutableInterface(i));
+      }
+    }
+
+    @Override
+    public List<Interface> getInterfaces() {
+      return Collections.unmodifiableList(interfaces);
     }
 
     @Override
@@ -449,6 +466,122 @@ public class Proxmox implements Provider {
     private InetAddress getManagementAddress() {
       return Proxmox.this.getManagementAddress(id);
     }
+
+    public class MutableInterface extends Interface {
+
+      private final int id;
+
+      private LinuxBridge bridge;
+      private Integer rate;
+      private boolean enabled = true;
+
+      private Inet4Address addressv4;
+      private int netmaskv4 = 24;
+      private Inet6Address addressv6;
+      private int netmaskv6 = 64;
+
+      private MutableInterface(int id) {
+        this.id = id;
+      }
+
+      private MutableInterface(int id, LinuxBridge bridge, Inet4Address addressv4, Inet6Address addressv6) {
+        this.id = id;
+
+        this.bridge = bridge;
+
+        this.addressv4 = addressv4;
+        this.addressv6 = addressv6;
+      }
+
+      @Override
+      public void setRate(Integer rate) throws IOException {
+        this.rate = rate;
+        updateNetConfig();
+      }
+
+      @Override
+      public void setEnabled(boolean enabled) throws IOException {
+        this.enabled = enabled;
+        updateNetConfig();
+      }
+
+      @Override
+      public void setBridge(Bridge bridge) throws IOException {
+        if (!(bridge instanceof LinuxBridge)) {
+          throw new UnsupportedOperationException("requires proxmox bridge");
+        }
+        LinuxBridge linuxBridge = (LinuxBridge) bridge;
+        if (linuxBridge.getParent() != Proxmox.this) {
+          throw new UnsupportedOperationException("requires proxmox bridge from this proxmox instance");
+        }
+
+        this.bridge = linuxBridge;
+        updateNetConfig();
+      }
+
+      private void updateNetConfig() throws IOException {
+        StringBuilder netConfig = new StringBuilder(String.format("model=virtio,bridge=%s", bridge.bridge));
+        if (!enabled) {
+          netConfig.append(",link_down=1");
+        }
+        if (rate != null) {
+          netConfig.append(",rate=").append(rate);
+        }
+
+
+        QemuConfig.SyncUpdate newConfig = new QemuConfig.SyncUpdate();
+        newConfig.ipconfig.put(id, netConfig.toString());
+        api.node(auth.node).qemu(Machine.this.id).config().put(newConfig);
+      }
+
+      @Override
+      public void setAddress(Inet4Address address) throws IOException {
+        addressv4 = address;
+        updateIpConfig();
+      }
+
+      @Override
+      public void setNetmaskV4(int netmask) throws IOException {
+        this.netmaskv4 = netmask;
+        updateIpConfig();
+      }
+
+      @Override
+      public Inet4Address getAddressV4() {
+        return addressv4;
+      }
+
+      @Override
+      public void setAddress(Inet6Address address) throws IOException {
+        addressv6 = address;
+        updateIpConfig();
+      }
+
+      @Override
+      public void setNetmaskV6(int netmask) throws IOException {
+        this.netmaskv6 = netmask;
+        updateIpConfig();
+      }
+
+      @Override
+      public Inet6Address getAddressV6() {
+        return addressv6;
+      }
+
+      private void updateIpConfig() throws IOException {
+        StringBuilder ipConfig = new StringBuilder();
+        if (addressv4 != null) {
+          ipConfig.append("ip=").append(addressv4).append('/').append(netmaskv4);
+        }
+        if (addressv6 != null) {
+          ipConfig.append("ip6=").append(addressv6).append('/').append(netmaskv6);
+        }
+
+        QemuConfig.SyncUpdate newConfig = new QemuConfig.SyncUpdate();
+        newConfig.ipconfig.put(id, ipConfig.toString());
+        api.node(auth.node).qemu(Machine.this.id).config().put(newConfig);
+      }
+    }
   }
 
   public class LinuxBridge extends Bridge {
@@ -466,6 +599,10 @@ public class Proxmox implements Provider {
     @Override
     public void closeAll() throws IOException {
       api.node(auth.node).networks().put();
+    }
+
+    private Proxmox getParent() {
+      return Proxmox.this;
     }
   }
 }
